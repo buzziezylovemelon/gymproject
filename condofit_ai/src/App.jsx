@@ -5,7 +5,7 @@ import { drawConnectors, drawLandmarks } from '@mediapipe/drawing_utils';
 import { Camera } from '@mediapipe/camera_utils';
 
 const EXERCISES = {
-    Dumbbell: ['Bicep Curl', 'Overhead Triceps Extension'],
+    Dumbbell: ['Bicep Curl', 'Side Lateral', 'Dumbbell Press'],
     Kettlebell: ['Kettlebell Swing', 'Sumo Squat', 'Goblet Squat'],
     Bodyweight: ['Squat', 'Plank', 'Push-up', 'Lunge', 'Jumping Jack']
 };
@@ -112,6 +112,7 @@ function CameraView({
     const plankAccumulatedTime = useRef(0);
     const lastFrameTime = useRef(0);
     const previousHipY = useRef(0);
+    const baselineHipY = useRef(0);
 
     useEffect(() => { activeExerciseRef.current = activeExercise; }, [activeExercise]);
     useEffect(() => { repsRef.current = reps; }, [reps]);
@@ -126,8 +127,11 @@ function CameraView({
             plankAccumulatedTime.current = 0;
             lastFrameTime.current = 0;
             previousHipY.current = 0;
-            if (activeExercise === 'Squat' || activeExercise === 'Lunge') {
+            baselineHipY.current = 0;
+            if (activeExercise === 'Squat' || activeExercise === 'Lunge' || activeExercise === 'Sumo Squat' || activeExercise === 'Goblet Squat') {
                 setExerciseStage('up');
+            } else if (activeExercise === 'Push-up') {
+                setExerciseStage('setup');
             } else {
                 setExerciseStage('down');
             }
@@ -341,26 +345,190 @@ function CameraView({
                 let newColor = feedbackColorRef.current;
 
                 if (ex === 'Bicep Curl') {
-                    // Right side: 12 (Shoulder), 14 (Elbow), 16 (Wrist)
-                    const shoulder = landmarks[12];
-                    const elbow = landmarks[14];
-                    const wrist = landmarks[16];
+                    // Dynamic Side Detection (Visibility Check)
+                    const leftVis = (landmarks[11].visibility + landmarks[13].visibility + landmarks[15].visibility + landmarks[23].visibility) / 4;
+                    const rightVis = (landmarks[12].visibility + landmarks[14].visibility + landmarks[16].visibility + landmarks[24].visibility) / 4;
 
-                    const angle = calculateAngle(shoulder, elbow, wrist);
-                    const upperArmAngle = calculateVerticalAngle(shoulder, elbow);
+                    const isLeft = leftVis > rightVis;
 
-                    if (upperArmAngle > 20) {
-                        newFeedback = "Keep upper arm still!";
+                    const shoulder = isLeft ? landmarks[11] : landmarks[12];
+                    const elbow = isLeft ? landmarks[13] : landmarks[14];
+                    const wrist = isLeft ? landmarks[15] : landmarks[16];
+                    const hip = isLeft ? landmarks[23] : landmarks[24];
+
+                    // Strict Form Tracking (Geometry & Angles)
+                    const elbowAngle = calculateAngle(shoulder, elbow, wrist);
+                    const upperArmAngle = calculateAngle(hip, shoulder, elbow);
+
+                    // Strict State Machine & Cheat Prevention
+                    if (upperArmAngle > 35.0) {
+                        newFeedback = "WARNING: Lock your elbow to your side!";
                         newColor = "#FF0000";
                     } else {
-                        if (angle > 140) {
-                            if (newStage === 'up') newReps += 1;
+                        if (newStage === 'up' && elbowAngle > 150.0) {
                             newStage = 'down';
-                            newFeedback = "Good Form";
+                            newFeedback = "Good! Now curl up.";
                             newColor = "#00FF00";
-                        } else if (angle < 50) {
+                        } else if (newStage === 'down' && elbowAngle < 40.0) {
+                            newReps += 1;
                             newStage = 'up';
-                            newFeedback = "Good Form";
+                            newFeedback = "Perfect Curl!";
+                            newColor = "#00FF00";
+                        }
+                    }
+                } else if (ex === 'Side Lateral') {
+                    // Symmetrical Front-Facing Tracking (Both Arms)
+                    const lShoulder = landmarks[11], lElbow = landmarks[13], lWrist = landmarks[15], lHip = landmarks[23];
+                    const rShoulder = landmarks[12], rElbow = landmarks[14], rWrist = landmarks[16], rHip = landmarks[24];
+
+                    // Calculate Angles
+                    // Arm Straightness (T-Rex Arm Check)
+                    const lArmAngle = calculateAngle(lShoulder, lElbow, lWrist);
+                    const rArmAngle = calculateAngle(rShoulder, rElbow, rWrist);
+
+                    // Lateral Raise Height (Angle between Hip, Shoulder, Elbow)
+                    const lRaiseAngle = calculateAngle(lHip, lShoulder, lElbow);
+                    const rRaiseAngle = calculateAngle(rHip, rShoulder, rElbow);
+
+                    // Strict State Machine & Cheat Prevention
+                    if (lArmAngle < 130.0 || rArmAngle < 130.0) {
+                        newFeedback = "WARNING: Keep both arms straight!";
+                        newColor = "#FFA500";
+                    } else {
+                        if (newStage === 'up' && lRaiseAngle < 35.0 && rRaiseAngle < 35.0) {
+                            newStage = 'down';
+                            newFeedback = "Good! Raise to shoulder height.";
+                            newColor = "#00FF00";
+                        } else if (newStage === 'down' && lRaiseAngle > 75.0 && rRaiseAngle > 75.0) {
+                            newReps += 1;
+                            newStage = 'up';
+                            newFeedback = "Perfect Raise!";
+                            newColor = "#00FF00";
+                        }
+                    }
+                } else if (ex === 'Dumbbell Press') {
+                    // Symmetrical Front-Facing Tracking
+                    const lShoulder = landmarks[11], lElbow = landmarks[13], lWrist = landmarks[15];
+                    const rShoulder = landmarks[12], rElbow = landmarks[14], rWrist = landmarks[16];
+
+                    // Calculate Angles & Positions
+                    const lElbowAngle = calculateAngle(lShoulder, lElbow, lWrist);
+                    const rElbowAngle = calculateAngle(rShoulder, rElbow, rWrist);
+
+                    const isOverhead = (lWrist.y < lShoulder.y) && (rWrist.y < rShoulder.y);
+                    const armDifference = Math.abs(lElbowAngle - rElbowAngle);
+
+                    // Strict State Machine & Cheat Prevention
+                    if (!isOverhead) {
+                        newFeedback = "WARNING: Keep weights above your shoulders!";
+                        newColor = "#FF0000";
+                    } else if (armDifference > 35.0) {
+                        newFeedback = "WARNING: Press both arms evenly!";
+                        newColor = "#FFA500";
+                    } else {
+                        if (newStage === 'up' && lElbowAngle < 90.0 && rElbowAngle < 90.0) {
+                            newStage = 'down';
+                            newFeedback = "Good! Push to the top.";
+                            newColor = "#00FF00";
+                        } else if (newStage === 'down' && lElbowAngle > 150.0 && rElbowAngle > 150.0) {
+                            newReps += 1;
+                            newStage = 'up';
+                            newFeedback = "Perfect Press!";
+                            newColor = "#00FF00";
+                        }
+                    }
+                } else if (ex === 'Kettlebell Swing') {
+                    newFeedback = "Tracking Pose... Ready.";
+                    newColor = "#00FFFF";
+                } else if (ex === 'Sumo Squat') {
+                    // Symmetrical Front-Facing Tracking
+                    const lShoulder = landmarks[11], lWrist = landmarks[15], lHip = landmarks[23], lKnee = landmarks[25], lAnkle = landmarks[27];
+                    const rShoulder = landmarks[12], rWrist = landmarks[16], rHip = landmarks[24], rKnee = landmarks[26], rAnkle = landmarks[28];
+
+                    // Calculate Metrics & Angles
+                    // Stance Width (X-axis)
+                    const shoulderWidth = Math.abs(lShoulder.x - rShoulder.x);
+                    const ankleWidth = Math.abs(lAnkle.x - rAnkle.x);
+                    const isWideStance = ankleWidth > (shoulderWidth * 1.5);
+
+                    // Center Grip (Holding kettlebell in the middle)
+                    const wristDist = Math.abs(lWrist.x - rWrist.x);
+                    const isCenterGrip = (wristDist < shoulderWidth * 0.8) && (lWrist.y > lHip.y) && (rWrist.y > rHip.y);
+
+                    // Posture (Torso Angle to prevent leaning too far forward)
+                    const lBodyAngle = calculateAngle(lShoulder, lHip, lKnee);
+                    const rBodyAngle = calculateAngle(rShoulder, rHip, rKnee);
+
+                    // Squat Depth (Knee Angle)
+                    const lKneeAngle = calculateAngle(lHip, lKnee, lAnkle);
+                    const rKneeAngle = calculateAngle(rHip, rKnee, rAnkle);
+
+                    // Strict State Machine & Cheat Prevention
+                    if (!isWideStance) {
+                        newFeedback = "WARNING: Stand wider for Sumo!";
+                        newColor = "#FFA500";
+                    } else if (!isCenterGrip) {
+                        newFeedback = "WARNING: Hold weight in the center!";
+                        newColor = "#FFA500";
+                    } else if (lBodyAngle < 85.0 || rBodyAngle < 85.0) {
+                        newFeedback = "WARNING: Keep your chest up!";
+                        newColor = "#FF0000";
+                    } else {
+                        if (newStage === 'up' && lKneeAngle < 100.0 && rKneeAngle < 100.0) {
+                            newStage = 'down';
+                            newFeedback = "Good! Now stand up.";
+                            newColor = "#00FF00";
+                        } else if (newStage === 'down' && lKneeAngle > 160.0 && rKneeAngle > 160.0) {
+                            newReps += 1;
+                            newStage = 'up';
+                            newFeedback = "Perfect Sumo Squat!";
+                            newColor = "#00FF00";
+                        }
+                    }
+                } else if (ex === 'Goblet Squat') {
+                    // Symmetrical Front-Facing Tracking
+                    const lShoulder = landmarks[11], lWrist = landmarks[15], lHip = landmarks[23], lKnee = landmarks[25], lAnkle = landmarks[27];
+                    const rShoulder = landmarks[12], rWrist = landmarks[16], rHip = landmarks[24], rKnee = landmarks[26], rAnkle = landmarks[28];
+
+                    // Calculate Metrics & Angles
+                    // Body & Torso Verticals (for grip check)
+                    const avgShoulderY = (lShoulder.y + rShoulder.y) / 2;
+                    const avgHipY = (lHip.y + rHip.y) / 2;
+                    const avgWristY = (lWrist.y + rWrist.y) / 2;
+                    const torsoVerticalSpan = avgHipY - avgShoulderY;
+                    const chestZoneBottomBoundaryY = avgShoulderY + (torsoVerticalSpan * 0.4);
+
+                    // Stance Width Check (for differentiation)
+                    const shoulderWidth = Math.abs(lShoulder.x - rShoulder.x);
+                    const ankleWidth = Math.abs(lAnkle.x - rAnkle.x);
+
+                    // Posture (Torso Angle)
+                    const lBodyAngle = calculateAngle(lShoulder, lHip, lKnee);
+                    const rBodyAngle = calculateAngle(rShoulder, rHip, rKnee);
+
+                    // Squat Depth (Knee Angle)
+                    const lKneeAngle = calculateAngle(lHip, lKnee, lAnkle);
+                    const rKneeAngle = calculateAngle(rHip, rKnee, rAnkle);
+
+                    // Strict State Machine & Cheat Prevention (Strict Order)
+                    if (ankleWidth > (shoulderWidth * 1.5)) {
+                        newFeedback = "WARNING: Stance too wide for Goblet!";
+                        newColor = "#FFA500";
+                    } else if (avgWristY > chestZoneBottomBoundaryY) {
+                        newFeedback = "WARNING: Hold weight at chest level!";
+                        newColor = "#FFA500";
+                    } else if (lBodyAngle < 90.0 || rBodyAngle < 90.0) {
+                        newFeedback = "WARNING: Keep your chest up!";
+                        newColor = "#FF0000";
+                    } else {
+                        if (newStage === 'up' && lKneeAngle < 100.0 && rKneeAngle < 100.0) {
+                            newStage = 'down';
+                            newFeedback = "Good! Now stand up.";
+                            newColor = "#00FF00";
+                        } else if (newStage === 'down' && lKneeAngle > 160.0 && rKneeAngle > 160.0) {
+                            newReps += 1;
+                            newStage = 'up';
+                            newFeedback = "Perfect Goblet Squat!";
                             newColor = "#00FF00";
                         }
                     }
@@ -389,11 +557,12 @@ function CameraView({
                         }
                     }
                 } else if (ex === 'Jumping Jack') {
-                    // Left: 11 (Shoulder), 15 (Wrist), 27 (Ankle)
-                    // Right: 12 (Shoulder), 16 (Wrist), 28 (Ankle)
+                    // Left: 11 (Shoulder), 15 (Wrist), 27 (Ankle), 23 (Hip)
+                    // Right: 12 (Shoulder), 16 (Wrist), 28 (Ankle), 24 (Hip)
                     const lShoulder = landmarks[11], rShoulder = landmarks[12];
                     const lWrist = landmarks[15], rWrist = landmarks[16];
                     const lAnkle = landmarks[27], rAnkle = landmarks[28];
+                    const lHip = landmarks[23], rHip = landmarks[24];
 
                     // 1. Distance calculation on x-axis
                     const ankleDist = Math.abs(lAnkle.x - rAnkle.x);
@@ -404,16 +573,32 @@ function CameraView({
                     const armsUp = (rWrist.y < rShoulder.y) && (lWrist.y < lShoulder.y);
                     const legsApart = ankleDist > (shoulderDist * 1.5);
 
-                    // 3 & 4. State Machine & Form Feedback
+                    // 3. Baseline Tracking & Jump Validation
+                    const currentHipY = (lHip.y + rHip.y) / 2;
+
+                    if (!armsUp && !legsApart) {
+                        baselineHipY.current = currentHipY;
+                    }
+
+                    const jumpHeight = baselineHipY.current > 0 ? (baselineHipY.current - currentHipY) : 0;
+                    const isJumping = jumpHeight > 0.005;
+
+                    // 4. Update State Machine
                     if (armsUp && legsApart) {
-                        newStage = 'up';
-                        newFeedback = "Good Pace!";
-                        newColor = "#00FF00";
+                        if (isJumping) {
+                            newStage = 'up';
+                            newFeedback = "Good Pace!";
+                            newColor = "#00FF00";
+                        } else {
+                            newFeedback = "WARNING: Give it a little bounce!";
+                            newColor = "#FFA500";
+                        }
                     } else if (!armsUp && !legsApart) {
                         if (newStage === 'up') {
                             newReps += 1;
                             newStage = 'down';
                         }
+                        baselineHipY.current = currentHipY;
                         newFeedback = "Good Pace!";
                         newColor = "#00FF00";
                     } else if (newStage === 'up' && !armsUp) {
@@ -454,30 +639,57 @@ function CameraView({
                         }
                     }
                 } else if (ex === 'Push-up') {
-                    // Right side: 12 (Shoulder), 24 (Hip), 28 (Ankle)
-                    const rShoulder = landmarks[12];
-                    const rHip = landmarks[24];
-                    const rAnkle = landmarks[28];
+                    // Dynamic Side Selection (Visibility Check)
+                    const leftVis = (landmarks[11].visibility + landmarks[13].visibility + landmarks[15].visibility + landmarks[23].visibility) / 4;
+                    const rightVis = (landmarks[12].visibility + landmarks[14].visibility + landmarks[16].visibility + landmarks[24].visibility) / 4;
 
-                    // Smart Push-up Logic (No Elbow Reliance)
-                    const bodyAngle = calculateAngle(rShoulder, rHip, rAnkle);
+                    const isLeft = leftVis > rightVis;
 
-                    if (bodyAngle < 140.0) {
-                        newFeedback = "WARNING: Keep your back straight!";
-                        newColor = "#FF0000";
+                    const shoulder = isLeft ? landmarks[11] : landmarks[12];
+                    const elbow = isLeft ? landmarks[13] : landmarks[14];
+                    const wrist = isLeft ? landmarks[15] : landmarks[16];
+                    const hip = isLeft ? landmarks[23] : landmarks[24];
+                    const ankle = isLeft ? landmarks[27] : landmarks[28];
+
+                    // 1. Horizontal Torso Requirement
+                    const torsoAngle = calculateVerticalAngle(shoulder, hip);
+
+                    if (torsoAngle <= 60.0) {
+                        newFeedback = "WARNING: Get into a horizontal push-up position!";
+                        newColor = "#FFA500";
+                        newStage = 'setup';
                     } else {
-                        newFeedback = "Good Form";
-                        newColor = "#00FF00";
+                        // 2. The Starting Pose Gate
+                        const bodyAngle = calculateAngle(shoulder, hip, ankle);
+                        const elbowAngle = calculateAngle(shoulder, elbow, wrist);
+                        const isArmVisible = (elbow.visibility > 0.5 && wrist.visibility > 0.5);
 
-                        // Depth Calculation
-                        // Normalized Canvas: smaller y is higher up screen.
-                        const verticalDist = rHip.y - rShoulder.y;
+                        if (bodyAngle < 140.0) {
+                            newFeedback = "WARNING: Keep your back straight!";
+                            newColor = "#FF0000";
+                            newStage = 'setup';
+                        } else {
+                            if (newStage === 'setup') {
+                                if (isArmVisible && elbowAngle > 150.0) {
+                                    newStage = 'up';
+                                    newFeedback = "Ready! Go down.";
+                                    newColor = "#00FF00";
+                                } else {
+                                    newFeedback = "Extend arms to start.";
+                                    newColor = "#FFA500";
+                                }
+                            } else if (newStage === 'up' || newStage === 'down') {
+                                newFeedback = "Good Form";
+                                newColor = "#00FF00";
 
-                        if (verticalDist < 0.05) {
-                            newStage = 'down';
-                        } else if (verticalDist > 0.15 && newStage === 'down') {
-                            newReps += 1;
-                            newStage = 'up';
+                                // 3. Rep Counting Flow
+                                if (newStage === 'up' && ((isArmVisible && elbowAngle < 90.0) || !isArmVisible)) {
+                                    newStage = 'down';
+                                } else if (newStage === 'down' && isArmVisible && elbowAngle > 150.0) {
+                                    newReps += 1;
+                                    newStage = 'up';
+                                }
+                            }
                         }
                     }
                 } else if (ex === 'Plank') {
@@ -659,20 +871,26 @@ function CameraView({
                 </div>
 
                 <div className="flex-1 overflow-y-auto w-full p-6 space-y-3">
-                    {currentExercises.map((ex, idx) => (
-                        <button
-                            key={idx}
-                            onClick={() => setActiveExercise(ex)}
-                            className="w-full flex items-center justify-between p-6 bg-white/[0.02] hover:bg-emerald-500/10 border border-white/5 hover:border-emerald-500/40 rounded-2xl transition-all duration-300 group shadow-lg"
-                        >
-                            <span className="text-lg font-bold text-slate-300 group-hover:text-white transition-colors tracking-wide">{ex}</span>
-                            <div className="text-emerald-400 opacity-0 group-hover:opacity-100 transform -translate-x-6 group-hover:translate-x-0 transition-all duration-300 ease-out flex items-center justify-center w-10 h-10 rounded-full bg-emerald-500/20 shadow-[0_0_15px_rgba(52,211,153,0.3)]">
-                                <svg className="w-5 h-5 ml-0.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M9 5l7 7-7 7" />
-                                </svg>
-                            </div>
-                        </button>
-                    ))}
+                    {currentExercises.map((ex, idx) => {
+                        const isJumpingJack = ex === 'Jumping Jack';
+                        return (
+                            <button
+                                key={idx}
+                                onClick={() => {
+                                    setActiveExercise(ex);
+                                    if (isJumpingJack) setDetectionMode(null);
+                                }}
+                                className="w-full flex items-center justify-between p-6 bg-white/[0.02] hover:bg-emerald-500/10 border border-white/5 hover:border-emerald-500/40 rounded-2xl transition-all duration-300 group shadow-lg"
+                            >
+                                <span className="text-lg font-bold text-slate-300 group-hover:text-white transition-colors tracking-wide">{ex}</span>
+                                <div className="text-emerald-400 opacity-0 group-hover:opacity-100 transform -translate-x-6 group-hover:translate-x-0 transition-all duration-300 ease-out flex items-center justify-center w-10 h-10 rounded-full bg-emerald-500/20 shadow-[0_0_15px_rgba(52,211,153,0.3)]">
+                                    <svg className="w-5 h-5 ml-0.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M9 5l7 7-7 7" />
+                                    </svg>
+                                </div>
+                            </button>
+                        );
+                    })}
                 </div>
             </div>
 
