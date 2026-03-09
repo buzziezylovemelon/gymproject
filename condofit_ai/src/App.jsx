@@ -6,7 +6,7 @@ import { Camera } from '@mediapipe/camera_utils';
 
 const EXERCISES = {
     Dumbbell: ['Bicep Curl', 'Side Lateral', 'Dumbbell Press'],
-    Kettlebell: ['Kettlebell Swing', 'Sumo Squat', 'Goblet Squat'],
+    Kettlebell: ['Single-Arm Row', 'Sumo Squat', 'Goblet Squat'],
     Bodyweight: ['Squat', 'Plank', 'Push-up', 'Lunge', 'Jumping Jack']
 };
 
@@ -437,9 +437,42 @@ function CameraView({
                             newColor = "#00FF00";
                         }
                     }
-                } else if (ex === 'Kettlebell Swing') {
-                    newFeedback = "Tracking Pose... Ready.";
-                    newColor = "#00FFFF";
+                } else if (ex === 'Single-Arm Row') {
+                    // Dynamic Side Detection (Visibility Check)
+                    const leftVis = (landmarks[11].visibility + landmarks[13].visibility + landmarks[15].visibility + landmarks[23].visibility + landmarks[25].visibility) / 5;
+                    const rightVis = (landmarks[12].visibility + landmarks[14].visibility + landmarks[16].visibility + landmarks[24].visibility + landmarks[26].visibility) / 5;
+
+                    const isLeft = leftVis > rightVis;
+
+                    const shoulder = isLeft ? landmarks[11] : landmarks[12];
+                    const elbow = isLeft ? landmarks[13] : landmarks[14];
+                    const wrist = isLeft ? landmarks[15] : landmarks[16];
+                    const hip = isLeft ? landmarks[23] : landmarks[24];
+                    const knee = isLeft ? landmarks[25] : landmarks[26];
+
+                    // Calculate Metrics (The "True Lean" & Arm Extension)
+                    const torsoDx = Math.abs(shoulder.x - hip.x);
+                    const torsoDy = Math.abs(shoulder.y - hip.y);
+                    const isBentOver = torsoDx > (torsoDy * 0.6); // Requires horizontal reach to prove they are bending forward, not just sitting.
+
+                    const elbowAngle = calculateAngle(shoulder, elbow, wrist);
+
+                    // Strict State Machine & Cheat Prevention
+                    if (!isBentOver) {
+                        newFeedback = "WARNING: Lean forward (back near parallel)!";
+                        newColor = "#FF0000";
+                    } else {
+                        if (newStage === 'up' && elbowAngle > 140.0) {
+                            newStage = 'down';
+                            newFeedback = "Good! Now pull the weight up.";
+                            newColor = "#00FF00";
+                        } else if (newStage === 'down' && elbowAngle < 85.0) {
+                            newReps += 1;
+                            newStage = 'up';
+                            newFeedback = "Perfect Row!";
+                            newColor = "#00FF00";
+                        }
+                    }
                 } else if (ex === 'Sumo Squat') {
                     // Symmetrical Front-Facing Tracking
                     const lShoulder = landmarks[11], lWrist = landmarks[15], lHip = landmarks[23], lKnee = landmarks[25], lAnkle = landmarks[27];
