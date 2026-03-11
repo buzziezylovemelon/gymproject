@@ -4,6 +4,7 @@ import * as ort from 'onnxruntime-web';
 import { Pose, POSE_CONNECTIONS } from '@mediapipe/pose';
 import { drawConnectors, drawLandmarks } from '@mediapipe/drawing_utils';
 import { Camera } from '@mediapipe/camera_utils';
+import useRepSound from './useRepSound';
 
 const EXERCISES = {
     Dumbbell: ['Bicep Curl', 'Side Lateral', 'Dumbbell Press'],
@@ -12,17 +13,17 @@ const EXERCISES = {
 };
 
 export const VIDEO_PATHS = {
-    'Bicep Curl': '/videos/Bicep curl.mp4',
-    'Side Lateral': '/videos/Side lateral.mp4',
-    'Dumbbell Press': '/videos/Dumbbell press.mp4',
-    'Single-Arm Row': '/videos/Single arm row.mp4',
-    'Sumo Squat': '/videos/Sumo squat.mp4',
-    'Goblet Squat': '/videos/Goblet squat.mp4',
-    'Squat': '/videos/squat.mp4',
-    'Plank': '/videos/plank.mp4',
-    'Push-up': '/videos/pushup.mp4',
-    'Lunge': '/videos/lunge.mp4',
-    'Jumping Jack': '/videos/jumping-jack.mp4'
+    'Bicep Curl': '/videos/dumbbell/Bicep curl.mp4',
+    'Side Lateral': '/videos/dumbbell/Side lateral.mp4',
+    'Dumbbell Press': '/videos/dumbbell/Dumbbell press.mp4',
+    'Single-Arm Row': '/videos/kettlebell/Single arm row.mp4',
+    'Sumo Squat': '/videos/kettlebell/Sumo squat.mp4',
+    'Goblet Squat': '/videos/kettlebell/Goblet squat.mp4',
+    'Squat': '/videos/bodyweight/squat.mp4',
+    'Plank': '/videos/bodyweight/plank.mp4',
+    'Push-up': '/videos/bodyweight/pushup.mp4',
+    'Lunge': '/videos/bodyweight/lunge.mp4',
+    'Jumping Jack': '/videos/bodyweight/jumping-jack.mp4'
 };
 
 function calculateAngle(a, b, c) {
@@ -154,7 +155,7 @@ export default function App() {
     return (
         <div className="min-h-screen bg-black text-white font-sans overflow-hidden">
             {view === 'home' && <HomeScreen onPlay={() => setView('camera')} />}
-            {view === 'camera' && (
+            {view === 'camera' && !showSummary && (
                 <CameraView
                     onStop={(exerciseLog) => {
                         setSummaryData({
@@ -267,9 +268,9 @@ function HomeScreen({ onPlay }) {
         <div className="absolute inset-0 flex flex-col items-center justify-center bg-gradient-to-br from-slate-900 via-black to-slate-900">
             <div className="mb-12 text-center animate-fade-in-down">
                 <h1 className="text-5xl md:text-6xl font-black bg-clip-text text-transparent bg-gradient-to-r from-emerald-400 to-cyan-400 tracking-tight drop-shadow-sm">
-                    Auto-Detection UI
+                    AI Trainer For Exercise
                 </h1>
-                <p className="mt-4 text-slate-400 text-lg font-light tracking-wide">Your intelligent workout companion</p>
+                <p className="mt-4 text-slate-400 text-lg font-light tracking-wide">A fitness experience that will take you to the next level</p>
             </div>
 
             <button
@@ -310,6 +311,10 @@ function CameraView({
     const [session, setSession] = useState(null);
     const [selectedVideo, setSelectedVideo] = useState(null);
     const [isDropdownOpen, setIsDropdownOpen] = useState(false);
+    const [soundEnabled, setSoundEnabled] = useState(true);
+
+    // Sound feedback: beep on rep, buzzer on WARNING, TTS rep count
+    useRepSound(reps, feedback, soundEnabled);
 
     // Track total reps across all sets
     const totalRepsRef = useRef(0);
@@ -399,7 +404,7 @@ function CameraView({
 
         const loadModel = async () => {
             try {
-                const sess = await ort.InferenceSession.create('/best_10.onnx', { executionProviders: ['wasm'] });
+                const sess = await ort.InferenceSession.create('/best_12.onnx', { executionProviders: ['wasm'] });
                 if (isSubscribed) {
                     setSession(sess);
                     console.log("Model loaded successfully");
@@ -810,24 +815,71 @@ function CameraView({
                     // Right: 24, 26, 28 | Left: 23, 25, 27
                     const rHip = landmarks[24], rKnee = landmarks[26], rAnkle = landmarks[28];
                     const lHip = landmarks[23], lKnee = landmarks[25], lAnkle = landmarks[27];
+                    const rShoulder = landmarks[12], lShoulder = landmarks[11];
 
+                    // Knee angles (squat depth)
                     const rAngle = calculateAngle(rHip, rKnee, rAnkle);
                     const lAngle = calculateAngle(lHip, lKnee, lAnkle);
                     const avgAngle = (rAngle + lAngle) / 2;
 
-                    if (Math.abs(rAngle - lAngle) > 20) {
-                        newFeedback = "Balance your weight!";
+                    // Torso lean check (forward lean detection)
+                    const midShoulder = { x: (lShoulder.x + rShoulder.x) / 2, y: (lShoulder.y + rShoulder.y) / 2 };
+                    const midHip = { x: (lHip.x + rHip.x) / 2, y: (lHip.y + rHip.y) / 2 };
+                    const torsoAngle = calculateVerticalAngle(midShoulder, midHip);
+
+                    // Form checks (priority order: most critical first)
+                    if (torsoAngle > 40) {
+                        // Leaning too far forward — risk of back injury
+                        newFeedback = "WARNING: Keep your chest up!";
+                        newColor = "#FF0000";
+                    } else if (Math.abs(rAngle - lAngle) > 20) {
+                        // Uneven weight distribution
+                        newFeedback = "WARNING: Balance your weight!";
                         newColor = "#FFA500";
+                    } else if (avgAngle < 70) {
+                        // Squatting way past parallel — mark as invalid rep
+                        newStage = 'tooDeep';
+                        newFeedback = "WARNING: Don't squat too deep!";
+                        newColor = "#FF0000";
                     } else {
-                        if (avgAngle < 115) {
-                            newStage = 'down';
-                            newFeedback = "Good Form";
-                            newColor = "#00FF00";
-                        } else if (avgAngle > 150) {
-                            if (newStage === 'down') newReps += 1;
+                        // 3-Stage State Machine: 'up' → 'mid' → 'down'
+                        if (avgAngle > 150) {
+                            // Standing position — evaluate the rep
+                            if (newStage === 'down') {
+                                // Came back from proper depth → count rep
+                                newReps += 1;
+                                newFeedback = "Perfect Squat!";
+                            } else if (newStage === 'mid') {
+                                // Came back up WITHOUT reaching depth → warn NOW
+                                newFeedback = "WARNING: Go deeper next time!";
+                            } else if (newStage === 'tooDeep') {
+                                // Came back from too deep → warn, don't count
+                                newFeedback = "WARNING: You squatted too deep!";
+                            } else {
+                                newFeedback = "Good Form";
+                            }
                             newStage = 'up';
-                            newFeedback = "Good Form";
+                            newColor = newStage === 'up' && newFeedback.startsWith('WARNING') ? "#FFA500" : "#00FF00";
+                        } else if (avgAngle < 115) {
+                            // Good depth reached
+                            newStage = 'down';
+                            newFeedback = "Good depth! Push up.";
                             newColor = "#00FF00";
+                        } else {
+                            // Mid-range zone (115–150°)
+                            if (newStage === 'up') {
+                                // Just entered the squat zone — mark as descending
+                                newStage = 'mid';
+                            }
+                            if (newStage === 'mid') {
+                                // Still descending — encourage, no warning yet
+                                newFeedback = "Keep going down...";
+                                newColor = "#00FF00";
+                            } else {
+                                // stage is 'down' — ascending from good depth
+                                newFeedback = "Push up!";
+                                newColor = "#00FF00";
+                            }
                         }
                     }
                 } else if (ex === 'Jumping Jack') {
@@ -1270,6 +1322,28 @@ function CameraView({
                                 )}
                             </div>
                         </div>
+
+                        {/* Sound Toggle */}
+                        <button
+                            onClick={() => setSoundEnabled(prev => !prev)}
+                            className={`w-full group flex items-center justify-center gap-3 px-6 py-4 font-bold text-base tracking-wide rounded-xl shadow-lg transition-all transform hover:-translate-y-1 active:scale-95 border ${soundEnabled
+                                    ? 'bg-gradient-to-br from-emerald-600/20 to-emerald-700/20 hover:from-emerald-500/30 hover:to-emerald-600/30 text-emerald-300 border-emerald-500/30'
+                                    : 'bg-white/5 hover:bg-white/10 text-slate-400 border-white/10'
+                                }`}
+                            title={soundEnabled ? 'Mute sound' : 'Unmute sound'}
+                        >
+                            {soundEnabled ? (
+                                <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15.536 8.464a5 5 0 010 7.072M17.95 6.05a8 8 0 010 11.9M6.5 8.788l4.032-3.36A.75.75 0 0111.75 6v12a.75.75 0 01-1.218.585L6.5 15.212H4.25A1.75 1.75 0 012.5 13.462v-2.924c0-.966.784-1.75 1.75-1.75H6.5z" />
+                                </svg>
+                            ) : (
+                                <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5.586 15H4a1 1 0 01-1-1v-4a1 1 0 011-1h1.586l4.707-4.707C10.923 3.663 12 4.109 12 5v14c0 .891-1.077 1.337-1.707.707L5.586 15z" />
+                                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M17 14l2-2m0 0l2-2m-2 2l-2-2m2 2l2 2" />
+                                </svg>
+                            )}
+                            {soundEnabled ? 'Sound On' : 'Sound Off'}
+                        </button>
 
                         {/* Action Buttons */}
                         {activeExercise !== 'Plank' && !isResting && (
