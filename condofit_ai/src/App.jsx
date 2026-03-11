@@ -1,4 +1,5 @@
 import React, { useState, useRef, useEffect } from 'react';
+import html2canvas from 'html2canvas';
 import * as ort from 'onnxruntime-web';
 import { Pose, POSE_CONNECTIONS } from '@mediapipe/pose';
 import { drawConnectors, drawLandmarks } from '@mediapipe/drawing_utils';
@@ -8,6 +9,20 @@ const EXERCISES = {
     Dumbbell: ['Bicep Curl', 'Side Lateral', 'Dumbbell Press'],
     Kettlebell: ['Single-Arm Row', 'Sumo Squat', 'Goblet Squat'],
     Bodyweight: ['Squat', 'Plank', 'Push-up', 'Lunge', 'Jumping Jack']
+};
+
+export const VIDEO_PATHS = {
+    'Bicep Curl': '/videos/Bicep curl.mp4',
+    'Side Lateral': '/videos/Side lateral.mp4',
+    'Dumbbell Press': '/videos/Dumbbell press.mp4',
+    'Single-Arm Row': '/videos/Single arm row.mp4',
+    'Sumo Squat': '/videos/Sumo squat.mp4',
+    'Goblet Squat': '/videos/Goblet squat.mp4',
+    'Squat': '/videos/squat.mp4',
+    'Plank': '/videos/plank.mp4',
+    'Push-up': '/videos/pushup.mp4',
+    'Lunge': '/videos/lunge.mp4',
+    'Jumping Jack': '/videos/jumping-jack.mp4'
 };
 
 function calculateAngle(a, b, c) {
@@ -31,27 +46,217 @@ export default function App() {
 
     // Phase 3 States
     const [reps, setReps] = useState(0);
+    const [sets, setSets] = useState(1);
+    const [isResting, setIsResting] = useState(false);
     const [exerciseStage, setExerciseStage] = useState('down');
     const [feedback, setFeedback] = useState('Good Form');
     const [feedbackColor, setFeedbackColor] = useState('#00FF00');
+
+    // Workout Timer & Summary States
+    const [workoutStartTime, setWorkoutStartTime] = useState(null);
+    const [workoutElapsed, setWorkoutElapsed] = useState(0);
+    const [showSummary, setShowSummary] = useState(false);
+    const [summaryData, setSummaryData] = useState(null); // { exercises: [{exercise, sets, reps}], elapsed }
+    const summaryCardRef = useRef(null);
+
+    // Workout Timer Effect
+    useEffect(() => {
+        if (!workoutStartTime || showSummary) return;
+        const interval = setInterval(() => {
+            setWorkoutElapsed(Math.floor((Date.now() - workoutStartTime) / 1000));
+        }, 1000);
+        return () => clearInterval(interval);
+    }, [workoutStartTime, showSummary]);
+
+    const formatTime = (totalSeconds) => {
+        const m = Math.floor(totalSeconds / 60).toString().padStart(2, '0');
+        const s = (totalSeconds % 60).toString().padStart(2, '0');
+        return `${m}:${s}`;
+    };
+
+    const handleCloseSummary = () => {
+        setShowSummary(false);
+        setSummaryData(null);
+        setView('home');
+        setReps(0);
+        setSets(1);
+        setIsResting(false);
+        setExerciseStage('down');
+        setFeedback('Good Form');
+        setFeedbackColor('#00FF00');
+        setWorkoutStartTime(null);
+        setWorkoutElapsed(0);
+    };
+
+    const handleDownloadStat = async () => {
+        if (!summaryCardRef.current) return;
+        try {
+            const canvas = await html2canvas(summaryCardRef.current, {
+                backgroundColor: null,
+                scale: 2,
+                useCORS: true,
+            });
+            const link = document.createElement('a');
+            link.download = `workout-summary-${Date.now()}.png`;
+            link.href = canvas.toDataURL('image/png');
+            link.click();
+        } catch (err) {
+            console.error('Download failed:', err);
+        }
+    };
+
+    const handleDownloadTransparent = async () => {
+        if (!summaryData) return;
+        const container = document.createElement('div');
+        container.style.cssText = `
+            position: fixed; left: -9999px; top: -9999px;
+            width: 540px; padding: 48px 32px;
+            font-family: system-ui, -apple-system, 'Segoe UI', sans-serif;
+            color: white;
+        `;
+        const exerciseRows = summaryData.exercises.map(e => `
+            <div style="display:flex; justify-content:space-between; align-items:center; padding:12px 0; border-bottom:1px solid rgba(255,255,255,0.08);">
+                <div style="font-size:18px; font-weight:800; color:white;">${e.exercise}</div>
+                <div style="display:flex; gap:24px;">
+                    <div style="text-align:center;"><div style="font-size:10px; font-weight:700; letter-spacing:0.1em; text-transform:uppercase; color:rgba(255,255,255,0.4); margin-bottom:2px;">Sets</div><div style="font-size:20px; font-weight:900; color:white;">${e.sets}</div></div>
+                    <div style="text-align:center;"><div style="font-size:10px; font-weight:700; letter-spacing:0.1em; text-transform:uppercase; color:rgba(255,255,255,0.4); margin-bottom:2px;">Reps</div><div style="font-size:20px; font-weight:900; color:white;">${e.reps}</div></div>
+                </div>
+            </div>
+        `).join('');
+        container.innerHTML = `
+            <div style="text-align:center; margin-bottom:28px;">
+                <div style="font-size:11px; font-weight:900; letter-spacing:0.3em; text-transform:uppercase; color:#34d399; margin-bottom:6px;">Workout Complete</div>
+                <div style="font-size:36px; font-weight:900; color:white;">${formatTime(summaryData.elapsed)}</div>
+                <div style="font-size:11px; font-weight:700; letter-spacing:0.15em; text-transform:uppercase; color:rgba(255,255,255,0.4); margin-top:4px;">Total Time</div>
+            </div>
+            <div style="margin-bottom:20px;">${exerciseRows}</div>
+            <div style="text-align:center;">
+                <div style="font-size:10px; font-weight:600; letter-spacing:0.2em; text-transform:uppercase; color:rgba(255,255,255,0.25);">CondoFit AI</div>
+            </div>
+        `;
+        document.body.appendChild(container);
+        try {
+            const canvas = await html2canvas(container, {
+                backgroundColor: null,
+                scale: 3,
+            });
+            const link = document.createElement('a');
+            link.download = `workout-transparent-${Date.now()}.png`;
+            link.href = canvas.toDataURL('image/png');
+            link.click();
+        } catch (err) {
+            console.error('Transparent download failed:', err);
+        } finally {
+            document.body.removeChild(container);
+        }
+    };
 
     return (
         <div className="min-h-screen bg-black text-white font-sans overflow-hidden">
             {view === 'home' && <HomeScreen onPlay={() => setView('camera')} />}
             {view === 'camera' && (
                 <CameraView
-                    onStop={() => {
-                        setView('home');
-                        setReps(0);
-                        setExerciseStage('down');
-                        setFeedback('Good Form');
-                        setFeedbackColor('#00FF00');
+                    onStop={(exerciseLog) => {
+                        setSummaryData({
+                            exercises: exerciseLog,
+                            elapsed: workoutElapsed,
+                        });
+                        setShowSummary(true);
                     }}
                     reps={reps} setReps={setReps}
+                    sets={sets} setSets={setSets}
+                    isResting={isResting} setIsResting={setIsResting}
                     exerciseStage={exerciseStage} setExerciseStage={setExerciseStage}
                     feedback={feedback} setFeedback={setFeedback}
                     feedbackColor={feedbackColor} setFeedbackColor={setFeedbackColor}
+                    workoutStartTime={workoutStartTime}
+                    setWorkoutStartTime={setWorkoutStartTime}
                 />
+            )}
+
+            {/* Post-Workout Summary Modal */}
+            {showSummary && summaryData && (
+                <div className="fixed inset-0 z-[200] bg-black/90 backdrop-blur-xl flex items-center justify-center p-4 animate-fade-in overflow-y-auto">
+                    <div className="flex flex-col items-center gap-6 max-w-lg w-full my-auto">
+
+                        {/* Stats Card (captured for download) */}
+                        <div
+                            ref={summaryCardRef}
+                            className="w-full rounded-3xl p-8 relative overflow-hidden"
+                            style={{
+                                background: 'linear-gradient(135deg, rgba(16,185,129,0.15) 0%, rgba(6,182,212,0.10) 50%, rgba(0,0,0,0) 100%)',
+                                border: '1px solid rgba(255,255,255,0.1)',
+                            }}
+                        >
+                            {/* Decorative accent */}
+                            <div className="absolute top-0 left-0 right-0 h-1 bg-gradient-to-r from-emerald-500 via-cyan-400 to-emerald-500 rounded-t-3xl"></div>
+
+                            {/* Header */}
+                            <div className="mb-6 text-center">
+                                <p className="text-emerald-400 text-xs font-black tracking-[0.3em] uppercase mb-2">Workout Complete</p>
+                                <p className="text-4xl md:text-5xl font-black text-white tracking-tight leading-none">{formatTime(summaryData.elapsed)}</p>
+                                <p className="text-slate-400 text-[10px] font-bold tracking-[0.2em] uppercase mt-2">Total Time</p>
+                            </div>
+
+                            {/* Divider */}
+                            <div className="w-full h-px bg-gradient-to-r from-transparent via-white/10 to-transparent mb-5"></div>
+
+                            {/* Per-Exercise Rows */}
+                            <div className="space-y-3">
+                                {summaryData.exercises.map((entry, idx) => (
+                                    <div key={idx} className="bg-white/[0.04] backdrop-blur-sm border border-white/10 rounded-2xl px-5 py-4 flex items-center justify-between">
+                                        <div>
+                                            <p className="text-white font-bold text-base tracking-wide">{entry.exercise}</p>
+                                        </div>
+                                        <div className="flex gap-6">
+                                            <div className="text-center">
+                                                <p className="text-slate-400 text-[9px] font-bold tracking-[0.15em] uppercase">Sets</p>
+                                                <p className="text-2xl font-black text-white leading-none mt-1">{entry.sets}</p>
+                                            </div>
+                                            <div className="text-center">
+                                                <p className="text-slate-400 text-[9px] font-bold tracking-[0.15em] uppercase">Reps</p>
+                                                <p className="text-2xl font-black text-white leading-none mt-1">{entry.reps}</p>
+                                            </div>
+                                        </div>
+                                    </div>
+                                ))}
+                            </div>
+
+                            {/* Branding Footer */}
+                            <div className="mt-6 text-center">
+                                <p className="text-slate-600 text-[10px] font-medium tracking-[0.2em] uppercase">CondoFit AI</p>
+                            </div>
+                        </div>
+
+                        {/* Action Buttons */}
+                        <div className="w-full flex flex-col gap-3">
+                            <button
+                                onClick={handleDownloadStat}
+                                className="w-full py-4 bg-white/5 hover:bg-white/10 border border-white/10 hover:border-emerald-500/50 text-white rounded-2xl text-base font-bold tracking-widest uppercase transition-all transform hover:-translate-y-0.5 active:scale-[0.98] flex items-center justify-center gap-3 shadow-xl"
+                            >
+                                <svg className="w-5 h-5 text-emerald-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4" />
+                                </svg>
+                                Download Stat
+                            </button>
+                            <button
+                                onClick={handleDownloadTransparent}
+                                className="w-full py-4 bg-gradient-to-r from-emerald-500/10 to-cyan-500/10 hover:from-emerald-500/20 hover:to-cyan-500/20 border border-emerald-500/30 hover:border-emerald-400/60 text-white rounded-2xl text-base font-bold tracking-widest uppercase transition-all transform hover:-translate-y-0.5 active:scale-[0.98] flex items-center justify-center gap-3 shadow-xl"
+                            >
+                                <svg className="w-5 h-5 text-cyan-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 16l4.586-4.586a2 2 0 012.828 0L16 16m-2-2l1.586-1.586a2 2 0 012.828 0L20 14m-6-6h.01M6 20h12a2 2 0 002-2V6a2 2 0 00-2-2H6a2 2 0 00-2 2v12a2 2 0 002 2z" />
+                                </svg>
+                                Download Transparent
+                            </button>
+                            <button
+                                onClick={handleCloseSummary}
+                                className="w-full py-5 bg-gradient-to-r from-emerald-500 to-cyan-500 hover:from-emerald-400 hover:to-cyan-400 text-white rounded-2xl text-xl font-black tracking-widest uppercase transition-all shadow-[0_10px_40px_rgba(52,211,153,0.3)] hover:shadow-[0_15px_60px_rgba(52,211,153,0.5)] transform hover:-translate-y-1 active:scale-95 flex items-center justify-center gap-3 border border-white/20"
+                            >
+                                Done
+                            </button>
+                        </div>
+                    </div>
+                </div>
             )}
         </div>
     );
@@ -91,19 +296,32 @@ function HomeScreen({ onPlay }) {
 function CameraView({
     onStop,
     reps, setReps,
+    sets, setSets,
+    isResting, setIsResting,
     exerciseStage, setExerciseStage,
     feedback, setFeedback,
-    feedbackColor, setFeedbackColor
+    feedbackColor, setFeedbackColor,
+    workoutStartTime, setWorkoutStartTime
 }) {
     const videoRef = useRef(null);
     const canvasRef = useRef(null); // Overlay canvas for Phase 3 drawing
     const [detectionMode, setDetectionMode] = useState(null);
     const [activeExercise, setActiveExercise] = useState(null);
     const [session, setSession] = useState(null);
+    const [selectedVideo, setSelectedVideo] = useState(null);
+    const [isDropdownOpen, setIsDropdownOpen] = useState(false);
+
+    // Track total reps across all sets
+    const totalRepsRef = useRef(0);
+
+    // Track stats per exercise across the workout
+    const workoutLogRef = useRef([]);
+    const prevExerciseRef = useRef(null);
 
     // Refs for state to use inside MediaPipe onResults safely
     const activeExerciseRef = useRef(activeExercise);
     const repsRef = useRef(reps);
+    const isRestingRef = useRef(isResting);
     const stageRef = useRef(exerciseStage);
     const feedbackRef = useRef(feedback);
     const feedbackColorRef = useRef(feedbackColor);
@@ -116,6 +334,7 @@ function CameraView({
 
     useEffect(() => { activeExerciseRef.current = activeExercise; }, [activeExercise]);
     useEffect(() => { repsRef.current = reps; }, [reps]);
+    useEffect(() => { isRestingRef.current = isResting; }, [isResting]);
     useEffect(() => { stageRef.current = exerciseStage; }, [exerciseStage]);
     useEffect(() => { feedbackRef.current = feedback; }, [feedback]);
     useEffect(() => { feedbackColorRef.current = feedbackColor; }, [feedbackColor]);
@@ -123,7 +342,19 @@ function CameraView({
     // Exercise initialization
     useEffect(() => {
         if (activeExercise) {
+            // Save previous exercise stats to the log if switching
+            if (prevExerciseRef.current && prevExerciseRef.current !== activeExercise) {
+                workoutLogRef.current.push({
+                    exercise: prevExerciseRef.current,
+                    sets: sets,
+                    reps: totalRepsRef.current + reps,
+                });
+            }
+            prevExerciseRef.current = activeExercise;
             setReps(0);
+            setSets(1);
+            setIsResting(false);
+            totalRepsRef.current = 0;
             plankAccumulatedTime.current = 0;
             lastFrameTime.current = 0;
             previousHipY.current = 0;
@@ -135,8 +366,12 @@ function CameraView({
             } else {
                 setExerciseStage('down');
             }
+            // Start the workout timer on first exercise
+            if (!workoutStartTime) {
+                setWorkoutStartTime(Date.now());
+            }
         }
-    }, [activeExercise, setReps, setExerciseStage]);
+    }, [activeExercise, setReps, setExerciseStage, workoutStartTime, setWorkoutStartTime]);
 
     // 1. Initialize camera
     useEffect(() => {
@@ -334,6 +569,12 @@ function CameraView({
 
                 drawConnectors(ctx, results.poseLandmarks, POSE_CONNECTIONS, { color: '#00FF00', lineWidth: 4 });
                 drawLandmarks(ctx, results.poseLandmarks, { color: '#FF0000', lineWidth: 2 });
+
+                // Pause rep counting and form checking during rest
+                if (isRestingRef.current) {
+                    ctx.restore();
+                    return;
+                }
 
                 // Process Custom Math Logic
                 const ex = activeExerciseRef.current;
@@ -819,9 +1060,14 @@ function CameraView({
         setDetectionMode(null);
         setActiveExercise(null);
         setReps(0);
+        setSets(1);
+        setIsResting(false);
         setExerciseStage('down');
         setFeedback('Good Form');
         setFeedbackColor('#00FF00');
+        totalRepsRef.current = 0;
+        workoutLogRef.current = [];
+        prevExerciseRef.current = null;
     };
 
     const currentExercises = detectionMode ? EXERCISES[detectionMode] : [];
@@ -907,21 +1153,34 @@ function CameraView({
                     {currentExercises.map((ex, idx) => {
                         const isJumpingJack = ex === 'Jumping Jack';
                         return (
-                            <button
-                                key={idx}
-                                onClick={() => {
-                                    setActiveExercise(ex);
-                                    if (isJumpingJack) setDetectionMode(null);
-                                }}
-                                className="w-full flex items-center justify-between p-6 bg-white/[0.02] hover:bg-emerald-500/10 border border-white/5 hover:border-emerald-500/40 rounded-2xl transition-all duration-300 group shadow-lg"
-                            >
-                                <span className="text-lg font-bold text-slate-300 group-hover:text-white transition-colors tracking-wide">{ex}</span>
-                                <div className="text-emerald-400 opacity-0 group-hover:opacity-100 transform -translate-x-6 group-hover:translate-x-0 transition-all duration-300 ease-out flex items-center justify-center w-10 h-10 rounded-full bg-emerald-500/20 shadow-[0_0_15px_rgba(52,211,153,0.3)]">
-                                    <svg className="w-5 h-5 ml-0.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M9 5l7 7-7 7" />
+                            <div key={idx} className="w-full flex items-center gap-2">
+                                <button
+                                    onClick={() => {
+                                        setActiveExercise(ex);
+                                        if (isJumpingJack) setDetectionMode(null);
+                                    }}
+                                    className="flex-1 flex items-center justify-between p-6 bg-white/[0.02] hover:bg-emerald-500/10 border border-white/5 hover:border-emerald-500/40 rounded-2xl transition-all duration-300 group shadow-lg"
+                                >
+                                    <span className="text-lg font-bold text-slate-300 group-hover:text-white transition-colors tracking-wide">{ex}</span>
+                                    <div className="text-emerald-400 opacity-0 group-hover:opacity-100 transform -translate-x-6 group-hover:translate-x-0 transition-all duration-300 ease-out flex items-center justify-center w-10 h-10 rounded-full bg-emerald-500/20 shadow-[0_0_15px_rgba(52,211,153,0.3)]">
+                                        <svg className="w-5 h-5 ml-0.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M9 5l7 7-7 7" />
+                                        </svg>
+                                    </div>
+                                </button>
+                                <button
+                                    onClick={(e) => {
+                                        e.stopPropagation();
+                                        setSelectedVideo({ name: ex, path: VIDEO_PATHS[ex] });
+                                    }}
+                                    className="flex-shrink-0 flex items-center justify-center w-16 h-[76px] bg-white/[0.02] hover:bg-cyan-500/20 border border-white/5 hover:border-cyan-500/40 rounded-2xl transition-all duration-300 shadow-lg text-cyan-400 group"
+                                    title={`Play ${ex} tutorial`}
+                                >
+                                    <svg className="w-7 h-7 transform group-hover:scale-110 transition-transform" fill="currentColor" viewBox="0 0 24 24">
+                                        <path d="M8 5v14l11-7z" />
                                     </svg>
-                                </div>
-                            </button>
+                                </button>
+                            </div>
                         );
                     })}
                 </div>
@@ -932,34 +1191,208 @@ function CameraView({
                 <div className="absolute inset-0 z-50 flex flex-col items-center justify-between pointer-events-none">
                     {/* Top Stats Overlay */}
                     <div className="w-full flex justify-between items-start p-8">
-                        <div className="bg-black/60 backdrop-blur-xl border border-white/20 px-8 py-5 rounded-3xl shadow-[0_0_30px_rgba(0,0,0,0.5)]">
-                            <h3 className="text-emerald-400 text-xs font-black tracking-[0.2em] uppercase mb-1">
-                                {activeExercise === 'Plank' ? 'Timer' : 'Total Reps'}
-                            </h3>
-                            <p className="text-6xl md:text-7xl font-black text-white leading-none tracking-tighter">
-                                {reps}
-                                {activeExercise === 'Plank' && <span className="text-2xl ml-2 text-emerald-400">sec</span>}
-                            </p>
+                        {/* Top Left Stats (Reps & Sets) */}
+                        <div className="bg-black/60 backdrop-blur-xl border border-white/20 px-8 py-5 rounded-3xl shadow-[0_0_30px_rgba(0,0,0,0.5)] flex gap-8">
+                            <div>
+                                <h3 className="text-emerald-400 text-xs font-black tracking-[0.2em] uppercase mb-1">
+                                    {activeExercise === 'Plank' ? 'Timer' : 'Total Reps'}
+                                </h3>
+                                <p className="text-6xl md:text-7xl font-black text-white leading-none tracking-tighter">
+                                    {reps}
+                                    {activeExercise === 'Plank' && <span className="text-2xl ml-2 text-emerald-400">sec</span>}
+                                </p>
+                            </div>
+                            {activeExercise !== 'Plank' && (
+                                <div className="pl-8 border-l border-white/10">
+                                    <h3 className="text-cyan-400 text-xs font-black tracking-[0.2em] uppercase mb-1">
+                                        Sets
+                                    </h3>
+                                    <p className="text-6xl md:text-7xl font-black text-white leading-none tracking-tighter opacity-90">
+                                        {sets}
+                                    </p>
+                                </div>
+                            )}
                         </div>
-                        <div
-                            className="bg-black/60 backdrop-blur-xl border px-8 py-5 rounded-3xl shadow-[0_0_30px_rgba(0,0,0,0.5)] transition-all duration-300 flex flex-col justify-center items-end"
-                            style={{ borderColor: `${feedbackColor}50` }}
-                        >
-                            <h3 className="text-xs font-black tracking-[0.2em] uppercase mb-1" style={{ color: feedbackColor }}>Form Status</h3>
-                            <p className="text-xl md:text-2xl font-black text-white uppercase tracking-wide text-right">{feedback}</p>
-                            <h2 className="text-sm font-bold text-gray-400 mt-2">{activeExercise}</h2>
+
+                        {/* Top Right Form Status */}
+                        <div className="flex flex-col gap-4">
+                            <div
+                                className="bg-black/60 backdrop-blur-xl border px-8 py-5 rounded-3xl shadow-[0_0_30px_rgba(0,0,0,0.5)] transition-all duration-300 flex flex-col justify-center items-end"
+                                style={{ borderColor: `${feedbackColor}50` }}
+                            >
+                                <h3 className="text-xs font-black tracking-[0.2em] uppercase mb-1" style={{ color: feedbackColor }}>Form Status</h3>
+                                <p className="text-xl md:text-2xl font-black text-white uppercase tracking-wide text-right">{feedback}</p>
+                            </div>
                         </div>
                     </div>
 
-                    <div className="absolute bottom-16 left-1/2 -translate-x-1/2 pointer-events-auto">
+                    {/* Left Sidebar Controls */}
+                    <div className="absolute left-8 top-1/2 -translate-y-1/2 flex flex-col gap-4 pointer-events-auto bg-black/60 backdrop-blur-xl border border-white/10 p-6 rounded-3xl shadow-[0_0_40px_rgba(0,0,0,0.5)]">
+                        <h3 className="text-emerald-400 text-xs font-black tracking-[0.2em] uppercase mb-2">Controls</h3>
+
+                        {/* Change Exercise Dropdown */}
+                        <div className="mb-4">
+                            <label className="text-slate-400 text-xs font-bold uppercase tracking-wider mb-2 block">Current Exercise</label>
+                            {/* Premium Change Exercise Dropdown */}
+                            <div className="mt-4 relative group w-full max-w-[200px]">
+                                <div className="absolute inset-0 bg-gradient-to-r from-emerald-500/20 to-cyan-500/20 rounded-xl blur-md transition-all opacity-50 group-hover:opacity-100"></div>
+
+                                {/* Custom Dropdown Trigger */}
+                                <div
+                                    onClick={() => setIsDropdownOpen(!isDropdownOpen)}
+                                    className="relative flex items-center justify-between w-full bg-black/80 hover:bg-black text-white font-bold text-sm py-2.5 px-4 rounded-xl cursor-pointer transition-colors border border-white/10 group-hover:border-emerald-500/50 shadow-xl"
+                                >
+                                    <span className="truncate">{activeExercise}</span>
+                                    <svg
+                                        className={`fill-current h-4 w-4 text-emerald-400 transition-transform duration-300 ${isDropdownOpen ? 'rotate-180' : ''}`}
+                                        xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20"
+                                    >
+                                        <path fillRule="evenodd" d="M5.293 7.293a1 1 0 011.414 0L10 10.586l3.293-3.293a1 1 0 111.414 1.414l-4 4a1 1 0 01-1.414 0l-4-4a1 1 0 010-1.414z" clipRule="evenodd" />
+                                    </svg>
+                                </div>
+
+                                {/* Custom Dropdown Menu */}
+                                {isDropdownOpen && currentExercises && (
+                                    <div className="absolute top-full left-0 right-0 mt-2 bg-zinc-900/95 backdrop-blur-xl border border-white/10 rounded-xl overflow-hidden shadow-[0_10px_40px_rgba(0,0,0,0.8)] z-50 animate-fade-in-down origin-top">
+                                        {currentExercises.map((ex) => (
+                                            <div
+                                                key={ex}
+                                                onClick={() => {
+                                                    setActiveExercise(ex);
+                                                    setIsDropdownOpen(false);
+                                                }}
+                                                className={`px-4 py-3 cursor-pointer text-sm font-medium transition-colors hover:bg-white/10 ${activeExercise === ex ? 'text-emerald-400 bg-white/5' : 'text-slate-300'}`}
+                                            >
+                                                {ex}
+                                            </div>
+                                        ))}
+                                    </div>
+                                )}
+                            </div>
+                        </div>
+
+                        {/* Action Buttons */}
+                        {activeExercise !== 'Plank' && !isResting && (
+                            <button
+                                onClick={() => {
+                                    totalRepsRef.current += reps;
+                                    setSets(prev => prev + 1);
+                                    setReps(0);
+                                    setIsResting(true);
+                                }}
+                                className="w-full group flex items-center justify-center gap-3 px-6 py-4 bg-gradient-to-br from-cyan-600 to-cyan-700 hover:from-cyan-500 hover:to-cyan-600 text-white font-bold text-base tracking-wide rounded-xl shadow-[0_5px_20px_rgba(6,182,212,0.3)] hover:shadow-[0_10px_30px_rgba(6,182,212,0.5)] transition-all transform hover:-translate-y-1 active:scale-95 border border-cyan-400/30"
+                            >
+                                <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M10 9v6m4-6v6m7-3a9 9 0 11-18 0 9 9 0 0118 0z" />
+                                </svg>
+                                Rest Set
+                            </button>
+                        )}
+
                         <button
-                            onClick={onStop}
-                            className="group flex items-center gap-4 px-10 py-5 bg-gradient-to-br from-red-600 to-red-700 hover:from-red-500 hover:to-red-600 text-white font-bold text-lg tracking-wide rounded-full shadow-[0_10px_40px_rgba(220,38,38,0.4)] hover:shadow-[0_20px_60px_rgba(220,38,38,0.6)] transition-all transform hover:scale-105 active:scale-95 border border-red-400/30"
+                            onClick={() => {
+                                // Push current exercise into the log
+                                const finalLog = [...workoutLogRef.current, {
+                                    exercise: activeExercise,
+                                    sets: sets,
+                                    reps: totalRepsRef.current + reps,
+                                }];
+                                onStop(finalLog);
+                            }}
+                            className="w-full group flex items-center justify-center gap-3 px-6 py-4 bg-gradient-to-br from-red-600 to-red-700 hover:from-red-500 hover:to-red-600 text-white font-bold text-base tracking-wide rounded-xl shadow-[0_5px_20px_rgba(220,38,38,0.3)] hover:shadow-[0_10px_30px_rgba(220,38,38,0.5)] transition-all transform hover:-translate-y-1 active:scale-95 border border-red-400/30"
                         >
-                            <div className="w-5 h-5 bg-white rounded flex-shrink-0 flex items-center justify-center">
-                                <div className="w-2 h-2 bg-red-600 rounded-sm"></div>
+                            <div className="w-4 h-4 bg-white rounded flex-shrink-0 flex items-center justify-center">
+                                <div className="w-1.5 h-1.5 bg-red-600 rounded-sm"></div>
                             </div>
                             Stop Workout
+                        </button>
+                    </div>
+                </div>
+            )}
+
+            {/* Rest Mode Popup */}
+            {isResting && (
+                <div className="absolute inset-0 z-[110] bg-black/90 backdrop-blur-lg flex items-center justify-center p-4 animate-fade-in">
+                    <div className="flex flex-col items-center justify-center max-w-lg w-full">
+                        <div className="w-32 h-32 rounded-full bg-cyan-500/10 border-4 border-cyan-500/30 flex items-center justify-center mb-8 animate-pulse shadow-[0_0_100px_rgba(6,182,212,0.4)]">
+                            <span className="text-5xl font-black text-cyan-400">{sets - 1}</span>
+                        </div>
+                        <h2 className="text-4xl font-black text-white tracking-widest uppercase mb-2">Sets Completed</h2>
+                        <p className="text-slate-400 text-lg mb-12 text-center">Take a breather. Drink some water. Get ready for Set {sets}.</p>
+
+                        <button
+                            onClick={() => setIsResting(false)}
+                            className="w-full py-6 bg-gradient-to-r from-emerald-500 to-cyan-500 hover:from-emerald-400 hover:to-cyan-400 text-white rounded-3xl text-2xl font-black tracking-widest uppercase transition-all shadow-[0_10px_40px_rgba(52,211,153,0.3)] hover:shadow-[0_15px_60px_rgba(52,211,153,0.5)] transform hover:-translate-y-1 active:scale-95 flex items-center justify-center gap-4 border border-white/20"
+                        >
+                            <svg className="w-8 h-8" fill="currentColor" viewBox="0 0 24 24">
+                                <path d="M8 5v14l11-7z" />
+                            </svg>
+                            Start Set {sets}
+                        </button>
+                    </div>
+                </div>
+            )}
+
+            {/* Modal for Video Playback */}
+            {selectedVideo && (
+                <div className="absolute inset-0 z-[100] bg-black/80 backdrop-blur-sm flex flex-col items-center justify-center p-4 transition-opacity duration-300 gap-6">
+                    <div className="relative w-full max-w-4xl bg-zinc-900 border border-white/10 rounded-3xl overflow-hidden shadow-[0_0_50px_rgba(0,0,0,0.8)] animate-fade-in-down">
+                        {/* Header */}
+                        <div className="flex items-center justify-between px-6 py-4 bg-black/40 border-b border-white/5">
+                            <h3 className="text-xl font-bold text-white tracking-wide">
+                                {selectedVideo.name} <span className="text-slate-500 font-light ml-2">Tutorial</span>
+                            </h3>
+                            <button
+                                onClick={() => setSelectedVideo(null)}
+                                className="w-10 h-10 flex items-center justify-center rounded-full bg-white/5 hover:bg-red-500/20 hover:text-red-400 text-slate-400 transition-colors"
+                            >
+                                <svg className="w-6 h-6" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+                                </svg>
+                            </button>
+                        </div>
+                        {/* Video Container */}
+                        <div className="w-full aspect-video bg-black relative flex items-center justify-center">
+                            {/* The actual video element */}
+                            <video
+                                src={selectedVideo.path}
+                                controls
+                                autoPlay
+                                className="w-full h-full object-contain"
+                                onError={(e) => {
+                                    e.target.style.display = 'none';
+                                    e.target.nextElementSibling.style.display = 'flex';
+                                }}
+                            >
+                                Your browser does not support the video tag.
+                            </video>
+
+                            {/* Fallback Display if video is missing */}
+                            <div className="hidden flex-col items-center justify-center absolute inset-0 text-slate-500 pt-10">
+                                <svg className="w-16 h-16 mb-4 opacity-50" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M15 10l4.553-2.276A1 1 0 0121 8.618v6.764a1 1 0 01-1.447.894L15 14M5 18h8a2 2 0 002-2V8a2 2 0 00-2-2H5a2 2 0 00-2 2v8a2 2 0 002 2z" />
+                                </svg>
+                                <p className="text-lg text-white">Video not available yet</p>
+                                <p className="text-sm mt-2 opacity-60">Add video to: <span className="text-cyan-400 font-mono tracking-wider">{selectedVideo.path}</span></p>
+                                <p className="text-xs mt-1 opacity-40">(in your public/videos folder)</p>
+                            </div>
+                        </div>
+                    </div>
+
+                    {/* Start Tracking Floating Button */}
+                    <div className="w-full max-w-4xl animate-fade-in-up">
+                        <button
+                            onClick={() => {
+                                setActiveExercise(selectedVideo.name);
+                                if (selectedVideo.name === 'Jumping Jack') setDetectionMode(null);
+                                setSelectedVideo(null);
+                            }}
+                            className="w-full py-5 bg-gradient-to-r from-emerald-500 to-cyan-500 hover:from-emerald-400 hover:to-cyan-400 text-white border border-white/20 rounded-3xl text-xl font-black tracking-widest uppercase transition-all shadow-[0_10px_40px_rgba(52,211,153,0.3)] hover:shadow-[0_15px_60px_rgba(52,211,153,0.5)] transform hover:-translate-y-1 active:scale-95 flex items-center justify-center gap-3"
+                        >
+                            <svg className="w-7 h-7" fill="currentColor" viewBox="0 0 24 24">
+                                <path d="M8 5v14l11-7z" />
+                            </svg>
+                            Start Tracking
                         </button>
                     </div>
                 </div>
